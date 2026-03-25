@@ -53,7 +53,7 @@ external-secrets/
 └── cluster-secret-store.yaml   # ClusterSecretStore → Vault
 
 external-secrets-configs/
-└── job-tracker/
+└── my-app/
     └── external-secret.yaml    # Example: postgres-secret + backend-secret
 
 argocd/applications/
@@ -64,10 +64,10 @@ argocd/applications/
 ## Vault Secret Paths
 
 ```
-secret/job-tracker/postgres
+secret/my-app/postgres
   └── POSTGRES_PASSWORD
 
-secret/job-tracker/backend
+secret/my-app/backend
   └── DB_PASSWORD, JWT_SECRET
 ```
 
@@ -164,7 +164,7 @@ kubectl apply -f argocd/applications/external-secrets-app.yaml
 # Wait for Vault pod
 kubectl get pods -n vault -w
 
-# Initialize Vault (one time only — save output securely in password manager)
+# Initialize Vault (one time only — save output securely in a password manager)
 kubectl exec -n vault vault-0 -- vault operator init
 ```
 
@@ -206,7 +206,7 @@ kubectl exec -n vault vault-0 -- vault write auth/kubernetes/role/external-secre
 
 ```bash
 kubectl apply -f external-secrets/cluster-secret-store.yaml
-kubectl apply -f external-secrets-configs/job-tracker/external-secret.yaml
+kubectl apply -f externamy-appl-secrets-configs/job-tracker/external-secret.yaml
 ```
 
 ### 7. Load secrets into Vault
@@ -214,13 +214,38 @@ kubectl apply -f external-secrets-configs/job-tracker/external-secret.yaml
 ```bash
 kubectl exec -it -n vault vault-0 -- vault login
 
-kubectl exec -n vault vault-0 -- vault kv put secret/job-tracker/postgres \
+kubectl exec -n vault vault-0 -- vault kv put secret/my-app/postgres \
   POSTGRES_PASSWORD=<your-password>
 
-kubectl exec -n vault vault-0 -- vault kv put secret/job-tracker/backend \
+kubectl exec -n vault vault-0 -- vault kv put secret/my-app/backend \
   DB_PASSWORD=<your-password> \
   JWT_SECRET=<your-jwt-secret>
 ```
+
+## Accessing the Vault UI
+
+Vault UI is not exposed via ingress intentionally — no attack surface, no TLS config, no maintenance overhead. Access it locally via SSH tunnel + port-forward instead.
+
+**Step 1 — Port-forward on your master node:**
+```bash
+kubectl port-forward -n vault vault-0 8200:8200
+```
+
+**Step 2 — SSH tunnel from your local machine:**
+```bash
+ssh -L 8200:localhost:8200 <user>@<master-node> -N
+```
+
+**Step 3 — Open in browser:**
+```
+http://localhost:8200/ui
+```
+
+Login method: **Token**
+
+> Use your root token for initial setup and admin tasks. For day-to-day
+> secret management, create a scoped token with write access only to
+> `secret/` paths to avoid using root credentials routinely.
 
 ## Verification
 
@@ -251,14 +276,16 @@ external-secrets-config Synced        Healthy
 
 ```bash
 # Update value in Vault
-kubectl exec -n vault vault-0 -- vault kv put secret/job-tracker/postgres \
+kubectl exec -n vault vault-0 -- vault kv put secret/my-app/postgres \
   POSTGRES_PASSWORD='newpassword'
 
 # ESO syncs automatically within 1 hour
-# Force immediate sync
+# Force immediate sync:
 kubectl annotate externalsecret postgres-secret \
-  -n job-tracker \
+  -n my-app \
   force-sync=$(date +%s) --overwrite
+
+# Alternatively, update secrets via the Vault UI (see Accessing the Vault UI section)
 ```
 
 ## Recovery
@@ -266,7 +293,7 @@ kubectl annotate externalsecret postgres-secret \
 If Vault becomes sealed (KMS unavailable):
 
 ```bash
-# Manual unseal using recovery keys
+# Manual unseal using recovery keys (store these in a password manager at init time)
 kubectl exec -it -n vault vault-0 -- vault operator unseal
 # Enter 3 of 5 recovery keys when prompted
 ```
@@ -277,10 +304,10 @@ kubectl exec -it -n vault vault-0 -- vault operator unseal
 - **File storage backend** — backed by Longhorn 3-way replication across nodes
 - **KMS auto-unseal** — cluster self-recovers after reboots without manual intervention
 - **ESO over Vault Agent** — cleaner separation, no sidecar injection needed
+- **No ingress for Vault UI** — access via SSH tunnel only, zero external attack surface
 - **creationPolicy: Owner** — ESO owns the K8s secrets, deleted when ExternalSecret is deleted
 
 ## Future Roadmap
-
 
 - [ ] Vault database secrets engine for dynamic credentials
 - [ ] Vault audit logging
